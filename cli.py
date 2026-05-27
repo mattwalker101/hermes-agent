@@ -15077,8 +15077,15 @@ def main(
                     # Session ID goes to stderr so piped stdout is clean.
                     print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
                     
-                    # Ensure proper exit code for automation wrappers
-                    sys.exit(1 if isinstance(result, dict) and result.get("failed") else 0)
+                    # Ensure cleanup runs before raising SystemExit. Quiet
+                    # single-query mode is often used by automation and exits
+                    # immediately after printing parseable output; relying on
+                    # atexit leaves memory-provider writer threads to drain
+                    # during interpreter shutdown, which can race aiohttp/DNS
+                    # executor teardown.
+                    _exit_code = 1 if isinstance(result, dict) and result.get("failed") else 0
+                    _run_cleanup()
+                    sys.exit(_exit_code)
             
             # Exit with error code if credentials or agent init fails
             sys.exit(1)

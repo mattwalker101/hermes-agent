@@ -8,6 +8,8 @@ turn counting, tags), and schema completeness.
 import json
 import re
 import sys
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -648,6 +650,38 @@ class TestPrefetch:
 
 
 class TestSyncTurn:
+    def test_lazy_client_creation_is_thread_safe(self, provider_with_config, monkeypatch):
+        """Concurrent retain + prefetch must share one aiohttp-backed client.
+
+        A one-shot CLI turn calls sync_turn() and queue_prefetch_all() back to
+        back. Without a lock, the retain writer and prefetch thread can both
+        observe _client is None, create separate Hindsight clients, and leak
+        the instance that loses the assignment race.
+        """
+        p = provider_with_config()
+        p._client = None
+        created = []
+
+        class FakeHindsight:
+            def __init__(self, **kwargs):
+                created.append(kwargs)
+                time.sleep(0.05)
+
+        import hindsight_client
+
+        monkeypatch.setattr(hindsight_client, "Hindsight", FakeHindsight)
+
+        clients = []
+        threads = [threading.Thread(target=lambda: clients.append(p._get_client())) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=1.0)
+
+        assert len(clients) == 2
+        assert clients[0] is clients[1]
+        assert len(created) == 1
+
     def test_sync_turn_retains_metadata_rich_turn(self, provider_with_config):
         p = provider_with_config(
             retain_tags=["conv", "session1"],
