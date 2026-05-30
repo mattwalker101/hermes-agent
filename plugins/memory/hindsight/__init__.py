@@ -543,6 +543,11 @@ class HindsightMemoryProvider(MemoryProvider):
         self._agent_workspace = ""
         self._turn_index = 0
         self._client = None
+        # _client is used by both the retain writer and recall prefetch
+        # threads. Guard lazy construction so concurrent retain+prefetch at
+        # the end of a one-shot CLI run cannot create two aiohttp-backed
+        # clients and leak whichever instance loses the assignment race.
+        self._client_lock = threading.Lock()
         self._timeout = _DEFAULT_TIMEOUT
         self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
         self._prefetch_result = ""
@@ -879,7 +884,11 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _get_client(self):
         """Return the cached Hindsight client (created once, reused)."""
-        if self._client is None:
+        if self._client is not None:
+            return self._client
+        with self._client_lock:
+            if self._client is not None:
+                return self._client
             if self._mode == "local_embedded":
                 available, reason = _check_local_runtime()
                 if not available:
@@ -927,7 +936,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 logger.debug("Creating Hindsight cloud client (url=%s, has_key=%s, timeout=%s)",
                              self._api_url, bool(self._api_key), kwargs["timeout"])
                 self._client = Hindsight(**kwargs)
-        return self._client
+            return self._client
 
     def _run_sync(self, coro):
         """Schedule *coro* on the shared loop using the configured timeout."""
